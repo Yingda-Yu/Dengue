@@ -62,8 +62,8 @@ class SpatialGCN(nn.Module):
         # 处理批次维度
         if x.dim() == 3:
             batch_size, num_nodes, _ = x.shape
-            # 展平批次和节点维度
-            x = x.view(batch_size * num_nodes, -1)
+            # 展平批次和节点维度（使用reshape确保兼容性）
+            x = x.contiguous().view(batch_size * num_nodes, -1)
             
             # 为每个批次样本创建边索引
             # PyTorch Geometric需要为批次中的每个图创建边索引
@@ -231,31 +231,24 @@ class EpidemiologyGNN(nn.Module):
         """
         batch_size, window_size, num_cities = x.shape
         
-        # 对每个时间步进行空间建模
+        # 优化：对每个时间步进行空间建模（批量处理）
         spatial_embeddings = []
         for t in range(window_size):
             x_t = x[:, t, :].unsqueeze(-1)  # (batch, num_cities, 1)
-            # 对批次中的每个样本分别处理GCN
-            h_t_list = []
-            for b in range(batch_size):
-                x_t_b = x_t[b].unsqueeze(0)  # (1, num_cities, 1)
-                h_t_b = self.spatial_gcn(x_t_b, edge_index)  # (1, num_cities, gcn_hidden_dim)
-                h_t_list.append(h_t_b)
-            h_t = torch.cat(h_t_list, dim=0)  # (batch, num_cities, gcn_hidden_dim)
+            # 直接对整个批次处理GCN（已优化SpatialGCN支持批次处理）
+            h_t = self.spatial_gcn(x_t, edge_index)  # (batch, num_cities, gcn_hidden_dim)
             spatial_embeddings.append(h_t)
         
         # 堆叠为序列 (batch, window_size, num_cities, gcn_hidden_dim)
         spatial_embeddings = torch.stack(spatial_embeddings, dim=1)
         
-        # 对每个城市进行时间建模
-        temporal_embeddings = []
-        for i in range(num_cities):
-            city_seq = spatial_embeddings[:, :, i, :]  # (batch, window_size, gcn_hidden_dim)
-            city_temporal = self.temporal_lstm(city_seq)  # (batch, lstm_hidden_dim)
-            temporal_embeddings.append(city_temporal)
-        
-        # 堆叠 (batch, num_cities, lstm_hidden_dim)
-        temporal_embeddings = torch.stack(temporal_embeddings, dim=1)
+        # 优化：批量处理所有城市的时间建模
+        # 重塑为 (batch * num_cities, window_size, gcn_hidden_dim)
+        spatial_reshaped = spatial_embeddings.view(batch_size * num_cities, window_size, -1)
+        # 批量处理所有城市
+        temporal_all = self.temporal_lstm(spatial_reshaped)  # (batch * num_cities, lstm_hidden_dim)
+        # 重塑回 (batch, num_cities, lstm_hidden_dim)
+        temporal_embeddings = temporal_all.view(batch_size, num_cities, -1)
         
         # 输出层
         predictions = self.output_layer(temporal_embeddings)  # (batch, num_cities, 1)

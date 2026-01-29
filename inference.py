@@ -8,7 +8,7 @@ from model import EpidemiologyGNN, create_fully_connected_graph
 
 def load_model(checkpoint_path, device='cuda' if torch.cuda.is_available() else 'cpu'):
     """加载训练好的模型"""
-    checkpoint = torch.load(checkpoint_path, map_location=device)
+    checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
     config = checkpoint['config']
     
     # 加载数据以获取城市信息

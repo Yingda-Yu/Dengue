@@ -58,27 +58,36 @@ class LossFunction(nn.Module):
         
         return total_loss, data_loss, sis_loss
 
-def train_epoch(model, dataloader, criterion, optimizer, device, edge_index):
+def train_epoch(model, dataloader, criterion, optimizer, device, edge_index, use_amp=False):
     """训练一个epoch"""
     model.train()
     total_loss = 0.0
     total_data_loss = 0.0
     total_sis_loss = 0.0
     
+    scaler = torch.amp.GradScaler('cuda') if use_amp else None
+    
     for X, y in tqdm(dataloader, desc="Training"):
-        X = X.to(device)
-        y = y.to(device)
+        X = X.to(device, non_blocking=True)
+        y = y.to(device, non_blocking=True)
         
-        # 前向传播
-        predictions, sis_predictions = model(X, edge_index, return_sis=True)
-        
-        # 计算损失
-        loss, data_loss, sis_loss = criterion(predictions, y, sis_predictions)
-        
-        # 反向传播
         optimizer.zero_grad()
-        loss.backward()
-        optimizer.step()
+        
+        if use_amp:
+            # 混合精度训练
+            with torch.amp.autocast('cuda'):
+                predictions, sis_predictions = model(X, edge_index, return_sis=True)
+                loss, data_loss, sis_loss = criterion(predictions, y, sis_predictions)
+            
+            scaler.scale(loss).backward()
+            scaler.step(optimizer)
+            scaler.update()
+        else:
+            # 标准训练
+            predictions, sis_predictions = model(X, edge_index, return_sis=True)
+            loss, data_loss, sis_loss = criterion(predictions, y, sis_predictions)
+            loss.backward()
+            optimizer.step()
         
         total_loss += loss.item()
         total_data_loss += data_loss.item()
@@ -158,7 +167,7 @@ def main():
     # 配置
     config = {
         'data_path': 'processed_data.pkl',
-        'batch_size': 32,
+        'batch_size': 128,  # 增大批次大小以加速训练
         'learning_rate': 0.001,
         'num_epochs': 50,
         'lambda_sis': 0.1,  # SIS正则化权重
@@ -170,7 +179,9 @@ def main():
         'use_sis': True,
         'learnable_sis_params': True,
         'device': 'cuda' if torch.cuda.is_available() else 'cpu',
-        'save_dir': 'checkpoints'
+        'save_dir': 'checkpoints',
+        'use_amp': True,  # 启用混合精度训练
+        'pin_memory': True  # 优化数据加载
     }
     
     # 创建保存目录
@@ -208,19 +219,22 @@ def main():
         train_dataset,
         batch_size=config['batch_size'],
         shuffle=True,
-        num_workers=0
+        num_workers=0,
+        pin_memory=config.get('pin_memory', False) if config['device'] == 'cuda' else False
     )
     val_loader = DataLoader(
         val_dataset,
         batch_size=config['batch_size'],
         shuffle=False,
-        num_workers=0
+        num_workers=0,
+        pin_memory=config.get('pin_memory', False) if config['device'] == 'cuda' else False
     )
     test_loader = DataLoader(
         test_dataset,
         batch_size=config['batch_size'],
         shuffle=False,
-        num_workers=0
+        num_workers=0,
+        pin_memory=config.get('pin_memory', False) if config['device'] == 'cuda' else False
     )
     
     # 创建图
@@ -248,7 +262,7 @@ def main():
     criterion = LossFunction(lambda_sis=config['lambda_sis'])
     optimizer = optim.Adam(model.parameters(), lr=config['learning_rate'])
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(
-        optimizer, mode='min', factor=0.5, patience=5, verbose=True
+        optimizer, mode='min', factor=0.5, patience=5
     )
     
     # 训练循环
@@ -262,7 +276,8 @@ def main():
         
         # 训练
         train_loss, train_data_loss, train_sis_loss = train_epoch(
-            model, train_loader, criterion, optimizer, config['device'], edge_index
+            model, train_loader, criterion, optimizer, config['device'], edge_index,
+            use_amp=config.get('use_amp', False)
         )
         
         # 验证
@@ -301,7 +316,7 @@ def main():
     print("=" * 60)
     
     # 加载最佳模型
-    checkpoint = torch.load(os.path.join(config['save_dir'], 'best_model.pth'))
+    checkpoint = torch.load(os.path.join(config['save_dir'], 'best_model.pth'), weights_only=False)
     model.load_state_dict(checkpoint['model_state_dict'])
     
     test_loss, test_data_loss, test_sis_loss, test_mae, test_rmse, test_pred, test_true = evaluate(

@@ -1,0 +1,23 @@
+City,3_Days_Ahead,7_Days_Ahead,14_Days_Ahead,30_Days_Ahead
+Changhua County,0.1634,0.1651,0.1742,0.2120
+Chiayi City,0.2180,0.2197,0.2341,0.2844
+Chiayi County,0.4882,0.4960,0.5136,0.6259
+Hsinchu City,0.1616,0.1633,0.1728,0.2269
+Hsinchu County,0.1714,0.1732,0.1800,0.2248
+Hualien County,0.1001,0.1002,0.1003,0.1007
+Kaohsiung City,3.2121,6.6904,17.0335,34.2891
+Keelung City,0.1031,0.1031,0.1033,0.1037
+Kinmen County,0.0723,0.0724,0.0724,0.0725
+Lienchiang County,0.0635,0.0635,0.0635,0.0635
+Miaoli County,0.1199,0.1201,0.1203,0.1208
+Nantou County,0.1399,0.1420,0.1458,0.1666
+New Taipei City,0.5171,0.5307,0.5659,1.9619
+Penghu County,0.0873,0.0874,0.0875,0.0877
+Pingtung County,0.6133,0.6280,0.6974,1.4885
+Taichung City,0.3323,0.3306,0.3391,0.4369
+Tainan City,25.3907,25.5895,28.4747,36.2215
+Taipei City,0.3504,0.3532,0.3677,0.4580
+Taitung County,0.1067,0.1068,0.1070,0.1074
+Taoyuan City,0.3149,0.3171,0.3293,0.3896
+Yilan County,0.1059,0.1060,0.1069,0.1134
+Yunlin County,0.9670,0.9952,1.0707,2.8335

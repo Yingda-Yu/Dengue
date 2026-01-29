@@ -1,0 +1,84 @@
+================================================================================
+Epidemiology-Informed Spatio-Temporal GNN 模型详细信息
+================================================================================
+
+模型架构:
+--------------------------------------------------------------------------------
+EpidemiologyGNN(
+  (spatial_gcn): SpatialGCN(
+    (layers): ModuleList(
+      (0): GCNLayer(
+        (conv): GCNConv(1, 64)
+      )
+      (1): GCNLayer(
+        (conv): GCNConv(64, 64)
+      )
+    )
+  )
+  (temporal_lstm): TemporalLSTM(
+    (lstm): LSTM(64, 128, num_layers=2, batch_first=True, dropout=0.1)
+  )
+  (output_layer): Sequential(
+    (0): Linear(in_features=128, out_features=64, bias=True)
+    (1): ReLU()
+    (2): Dropout(p=0.1, inplace=False)
+    (3): Linear(in_features=64, out_features=1, bias=True)
+  )
+  (sis_model): SISModel()
+)
+
+================================================================================
+各模块详细信息
+================================================================================
+
+模块: spatial_gcn
+类型: SpatialGCN
+参数数量: 4,288
+结构:
+SpatialGCN(
+  (layers): ModuleList(
+    (0): GCNLayer(
+      (conv): GCNConv(1, 64)
+    )
+    (1): GCNLayer(
+      (conv): GCNConv(64, 64)
+    )
+  )
+)
+--------------------------------------------------------------------------------
+
+模块: temporal_lstm
+类型: TemporalLSTM
+参数数量: 231,424
+结构:
+TemporalLSTM(
+  (lstm): LSTM(64, 128, num_layers=2, batch_first=True, dropout=0.1)
+)
+--------------------------------------------------------------------------------
+
+模块: output_layer
+类型: Sequential
+参数数量: 8,321
+结构:
+Sequential(
+  (0): Linear(in_features=128, out_features=64, bias=True)
+  (1): ReLU()
+  (2): Dropout(p=0.1, inplace=False)
+  (3): Linear(in_features=64, out_features=1, bias=True)
+)
+--------------------------------------------------------------------------------
+
+模块: sis_model
+类型: SISModel
+参数数量: 44
+结构:
+SISModel()
+--------------------------------------------------------------------------------
+
+================================================================================
+参数统计
+================================================================================
+总参数数量: 244,077
+可训练参数: 244,077
+模型大小: 0.93 MB (float32)
+================================================================================
