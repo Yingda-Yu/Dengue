@@ -1,6 +1,6 @@
 # Epidemiology-Informed Spatio-Temporal Graph Neural Network for Dengue Prediction
 
-An epidemiology-informed spatio-temporal graph neural network model for predicting dengue fever cases in Taiwan. test1
+An epidemiology-informed spatio-temporal graph neural network model for predicting dengue fever cases in Taiwan.
 
 ## Model Architecture
 
