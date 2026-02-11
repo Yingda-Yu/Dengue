@@ -323,10 +323,83 @@ def plot_city_metrics_bar(city_metrics, cities, horizons, output_dir):
     plt.close()
 
 
+def plot_city_time_series_both(all_predictions_soft, all_predictions_hard, all_targets, cities, horizons, test_dates, output_dir, horizon_plot=7):
+    """
+    图2（双模型）: 每个城市一张图，真实值 + 软约束预测 + 硬约束预测（默认取 horizon_plot 天预测）
+    """
+    city_dir = os.path.join(output_dir, 'city_predictions')
+    if not os.path.exists(city_dir):
+        os.makedirs(city_dir)
+    if horizon_plot not in horizons:
+        horizon_plot = horizons[0]
+    # 真实值用 max_horizon 对应长度；预测用 horizon_plot
+    max_horizon = max(horizons)
+    n_samples_actual = all_targets[max_horizon].shape[0]
+    n_samples_pred = all_predictions_soft[horizon_plot].shape[0]
+    dates_actual = test_dates[max_horizon - 1:max_horizon - 1 + n_samples_actual]
+    dates_pred = test_dates[horizon_plot - 1:horizon_plot - 1 + n_samples_pred]
+
+    for city_idx, city_name in enumerate(tqdm(cities, desc="生成城市时间序列图(真实+软+硬)")):
+        fig, ax = plt.subplots(figsize=(16, 8))
+        actual = all_targets[max_horizon][:, -1, city_idx]
+        soft_pred = all_predictions_soft[horizon_plot][:, -1, city_idx]
+        hard_pred = all_predictions_hard[horizon_plot][:, -1, city_idx]
+        min_len = min(len(dates_actual), len(actual))
+        ax.plot(dates_actual[:min_len], actual[:min_len], 'k-', label='Actual', linewidth=2, alpha=0.9)
+        min_len_p = min(len(dates_pred), len(soft_pred), len(hard_pred))
+        ax.plot(dates_pred[:min_len_p], soft_pred[:min_len_p], '--', color='#45B7D1', label='Soft constraint', linewidth=1.5, alpha=0.8)
+        ax.plot(dates_pred[:min_len_p], hard_pred[:min_len_p], '--', color='#FFA07A', label='Hard constraint', linewidth=1.5, alpha=0.8)
+        ax.set_xlabel('Date', fontsize=12, fontweight='bold')
+        ax.set_ylabel('Dengue Cases', fontsize=12, fontweight='bold')
+        ax.set_title(f'{city_name} - Actual vs Soft vs Hard ({horizon_plot}-Day Forecast, 2020-2024)', fontsize=14, fontweight='bold')
+        ax.legend(loc='upper right', fontsize=10)
+        ax.grid(True, alpha=0.3)
+        ax.xaxis.set_major_locator(mdates.MonthLocator(interval=6))
+        ax.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m'))
+        plt.xticks(rotation=45)
+        plt.tight_layout()
+        safe_city_name = city_name.replace('/', '_').replace(' ', '_')
+        plt.savefig(os.path.join(city_dir, f'fig2_{safe_city_name}_timeseries.png'), dpi=200, bbox_inches='tight')
+        plt.close()
+    # 汇总图：前 6 个城市，每子图 真实值 + 软 + 硬
+    num_show = min(6, len(cities))
+    fig, axes = plt.subplots(num_show, 1, figsize=(16, 4 * num_show))
+    if num_show == 1:
+        axes = [axes]
+    for i in range(num_show):
+        ax = axes[i]
+        city_idx = i
+        city_name = cities[city_idx]
+        actual = all_targets[max_horizon][:, -1, city_idx]
+        soft_pred = all_predictions_soft[horizon_plot][:, -1, city_idx]
+        hard_pred = all_predictions_hard[horizon_plot][:, -1, city_idx]
+        min_len = min(len(dates_actual), len(actual))
+        min_len_p = min(len(dates_pred), len(soft_pred), len(hard_pred))
+        ax.plot(dates_actual[:min_len], actual[:min_len], 'k-', label='Actual', lw=1.5, alpha=0.9)
+        ax.plot(dates_pred[:min_len_p], soft_pred[:min_len_p], '--', color='#45B7D1', label='Soft', lw=1.2, alpha=0.8)
+        ax.plot(dates_pred[:min_len_p], hard_pred[:min_len_p], '--', color='#FFA07A', label='Hard', lw=1.2, alpha=0.8)
+        ax.set_ylabel(f'{city_name}\nCases', fontsize=10)
+        ax.legend(loc='upper right', fontsize=8, ncol=3)
+        ax.grid(True, alpha=0.3)
+        ax.xaxis.set_major_locator(mdates.MonthLocator(interval=6))
+        ax.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m'))
+        if i == num_show - 1:
+            ax.set_xlabel('Date', fontsize=12, fontweight='bold')
+            plt.setp(ax.xaxis.get_majorticklabels(), rotation=45)
+        else:
+            ax.set_xticklabels([])
+    plt.suptitle(f'Actual vs Soft vs Hard ({horizon_plot}-Day Forecast) - Sample Cities', fontsize=14, fontweight='bold', y=1.01)
+    plt.tight_layout()
+    plt.savefig(os.path.join(output_dir, 'fig2_city_timeseries_summary.png'), dpi=300, bbox_inches='tight')
+    plt.close()
+    print(f"城市时间序列汇总图(真实+软+硬)已保存到: {output_dir}/fig2_city_timeseries_summary.png")
+    print(f"所有城市时间序列图(真实+软+硬)已保存到: {city_dir}")
+
+
 def plot_city_time_series(all_predictions, all_targets, cities, horizons, test_dates, output_dir):
     """
     图2: 每个城市的完整时间序列预测图（2020-2024年）
-    展示真实值和不同提前天数的预测值
+    展示真实值和不同提前天数的预测值（单模型）
     """
     city_dir = os.path.join(output_dir, 'city_predictions')
     if not os.path.exists(city_dir):
@@ -456,9 +529,48 @@ def plot_city_time_series(all_predictions, all_targets, cities, horizons, test_d
     plt.close()
 
 
+def plot_horizon_comparison_both(all_predictions_soft, all_predictions_hard, all_targets, cities, horizons, test_dates, output_dir):
+    """
+    图3（双模型）: 每个城市 2x2 子图，每个子图为一个 horizon，三条线：真实值、软约束预测、硬约束预测
+    """
+    city_dir = os.path.join(output_dir, 'city_predictions')
+    for city_idx, city_name in enumerate(tqdm(cities, desc="生成城市多horizon对比图(真实+软+硬)")):
+        fig, axes = plt.subplots(2, 2, figsize=(16, 12))
+        axes = axes.flatten()
+        for h_idx, horizon in enumerate(horizons):
+            ax = axes[h_idx]
+            tgt = all_targets[horizon][:, -1, city_idx]
+            pred_soft = all_predictions_soft[horizon][:, -1, city_idx]
+            pred_hard = all_predictions_hard[horizon][:, -1, city_idx]
+            n_samples = len(tgt)
+            dates = test_dates[horizon - 1:horizon - 1 + n_samples]
+            min_len = min(len(dates), len(tgt), len(pred_soft), len(pred_hard))
+            dates, tgt = dates[:min_len], tgt[:min_len]
+            pred_soft, pred_hard = pred_soft[:min_len], pred_hard[:min_len]
+            ax.plot(dates, tgt, 'k-', label='Actual', linewidth=1.5, alpha=0.9)
+            ax.plot(dates, pred_soft, '--', color='#45B7D1', label='Soft', linewidth=1.5, alpha=0.8)
+            ax.plot(dates, pred_hard, '--', color='#FFA07A', label='Hard', linewidth=1.5, alpha=0.8)
+            mae_s = np.mean(np.abs(pred_soft - tgt))
+            mae_h = np.mean(np.abs(pred_hard - tgt))
+            ax.set_title(f'{horizon}-Day Ahead\nMAE Soft: {mae_s:.2f}, Hard: {mae_h:.2f}', fontsize=12, fontweight='bold')
+            ax.set_xlabel('Date', fontsize=10)
+            ax.set_ylabel('Cases', fontsize=10)
+            ax.legend(loc='upper right', fontsize=9)
+            ax.grid(True, alpha=0.3)
+            ax.xaxis.set_major_locator(mdates.MonthLocator(interval=6))
+            ax.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m'))
+            plt.setp(ax.xaxis.get_majorticklabels(), rotation=45)
+        plt.suptitle(f'{city_name} - Actual vs Soft vs Hard by Horizon (2020-2024)', fontsize=14, fontweight='bold', y=1.02)
+        plt.tight_layout()
+        safe_city_name = city_name.replace('/', '_').replace(' ', '_')
+        plt.savefig(os.path.join(city_dir, f'fig3_{safe_city_name}_horizon_comparison.png'), dpi=200, bbox_inches='tight')
+        plt.close()
+    print(f"所有城市多horizon对比图(真实+软+硬)已保存到: {city_dir}")
+
+
 def plot_horizon_comparison(all_predictions, all_targets, cities, horizons, test_dates, output_dir):
     """
-    图3: 每个城市分别展示不同预测天数的子图（2x2布局）
+    图3: 每个城市分别展示不同预测天数的子图（2x2布局，单模型）
     """
     city_dir = os.path.join(output_dir, 'city_predictions')
     
@@ -545,9 +657,9 @@ def save_metrics_to_csv(city_metrics, cities, horizons, output_dir):
 
 def main():
     import argparse
-    parser = argparse.ArgumentParser(description='可视化预测结果，可选软约束或硬约束模型')
-    parser.add_argument('--model', type=str, choices=['soft', 'hard'], default='soft',
-                        help='使用哪个模型: soft=软约束权重, hard=硬约束权重')
+    parser = argparse.ArgumentParser(description='可视化预测结果，可选软/硬约束或双模型对比')
+    parser.add_argument('--model', type=str, choices=['soft', 'hard', 'both'], default='soft',
+                        help='soft=软约束, hard=硬约束, both=双模型(城市图含真实值+软+硬)')
     args = parser.parse_args()
     
     output_dir = ensure_output_dir()
@@ -555,83 +667,73 @@ def main():
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
     print(f"使用设备: {device}")
     
-    checkpoint_path = f'checkpoints/best_model_{args.model}.pth'
-    print(f"\n正在加载模型: {checkpoint_path} ({args.model} 约束)...")
-    model, data, config, transformer = load_model(checkpoint_path, device)
-    use_hard_constraint = config.get('use_hard_constraint', False)
-    
-    cities = data['cities']
-    test_X = data['test_X']
-    test_y = data['test_y']
-    
-    # 获取测试集的日期
-    test_dates = get_test_dates(data)
-    
-    print(f"模型加载完成！")
-    print(f"城市数量: {len(cities)}")
-    print(f"测试集大小: {len(test_X)}")
-    print(f"测试集日期范围: {test_dates[0]} 到 {test_dates[-1]}")
-    
-    edge_index = create_fully_connected_graph(len(cities)).to(device)
-    
-    horizons = [3, 7, 14, 30]
-    
-    print("\n" + "=" * 80)
-    print("开始多步预测评估（2020-2024年测试集）...")
-    print("=" * 80)
-    
-    city_metrics, all_predictions, all_targets = evaluate_multi_step_by_city(
-        model, test_X, test_y, edge_index, device, cities, transformer, horizons,
-        use_hard_constraint=use_hard_constraint
-    )
-    
-    print("\n" + "=" * 80)
-    print("评估结果汇总")
-    print("=" * 80)
-    
-    for horizon in horizons:
-        all_mae = [city_metrics[city][horizon]['MAE'] for city in cities]
-        all_rmse = [city_metrics[city][horizon]['RMSE'] for city in cities]
-        print(f"\n{horizon}天预测:")
-        print(f"  平均MAE: {np.mean(all_mae):.4f} (std: {np.std(all_mae):.4f})")
-        print(f"  平均RMSE: {np.mean(all_rmse):.4f} (std: {np.std(all_rmse):.4f})")
-    
-    print("\n" + "=" * 80)
-    print("生成可视化图表...")
-    print("=" * 80)
-    
-    # 图1: MAE和RMSE柱状图
-    print("\n生成图1: MAE和RMSE柱状图...")
-    plot_city_metrics_bar(city_metrics, cities, horizons, output_dir)
-    
-    # 图2: 完整时间序列预测图（2020-2024）
-    print("\n生成图2: 城市时间序列预测图（2020-2024）...")
-    plot_city_time_series(all_predictions, all_targets, cities, horizons, test_dates, output_dir)
-    
-    # 图3: 每个城市的多horizon对比图
-    print("\n生成图3: 城市多horizon对比图...")
-    plot_horizon_comparison(all_predictions, all_targets, cities, horizons, test_dates, output_dir)
-    
-    # 保存指标到CSV
-    print("\n保存指标数据...")
-    save_metrics_to_csv(city_metrics, cities, horizons, output_dir)
+    if args.model == 'both':
+        # 双模型：加载软、硬两个权重，评估两次，city_predictions 画真实值+软+硬
+        soft_path = 'checkpoints/best_model_soft.pth'
+        hard_path = 'checkpoints/best_model_hard.pth'
+        if not os.path.exists(soft_path) or not os.path.exists(hard_path):
+            print("请先训练软、硬两个模型: python train.py --constraint soft 与 python train.py --constraint hard")
+            return
+        print(f"\n正在加载软约束模型: {soft_path} ...")
+        model_soft, data, config_soft, transformer_soft = load_model(soft_path, device)
+        print(f"正在加载硬约束模型: {hard_path} ...")
+        model_hard, data, config_hard, transformer_hard = load_model(hard_path, device)
+        cities = data['cities']
+        test_X = data['test_X']
+        test_y = data['test_y']
+        test_dates = get_test_dates(data)
+        edge_index = create_fully_connected_graph(len(cities)).to(device)
+        horizons = [3, 7, 14, 30]
+        print("\n评估软约束模型...")
+        city_metrics_soft, all_predictions_soft, all_targets = evaluate_multi_step_by_city(
+            model_soft, test_X, test_y, edge_index, device, cities, transformer_soft, horizons, use_hard_constraint=False
+        )
+        print("\n评估硬约束模型...")
+        _, all_predictions_hard, _ = evaluate_multi_step_by_city(
+            model_hard, test_X, test_y, edge_index, device, cities, transformer_hard, horizons, use_hard_constraint=True
+        )
+        print("\n生成 city_predictions（每张图: 真实值 + 软约束 + 硬约束）...")
+        plot_city_time_series_both(all_predictions_soft, all_predictions_hard, all_targets, cities, horizons, test_dates, output_dir, horizon_plot=7)
+        plot_horizon_comparison_both(all_predictions_soft, all_predictions_hard, all_targets, cities, horizons, test_dates, output_dir)
+        print("\n生成图1: MAE和RMSE柱状图(软约束指标)...")
+        plot_city_metrics_bar(city_metrics_soft, cities, horizons, output_dir)
+        print("\n保存指标数据(软约束)...")
+        save_metrics_to_csv(city_metrics_soft, cities, horizons, output_dir)
+    else:
+        checkpoint_path = f'checkpoints/best_model_{args.model}.pth'
+        print(f"\n正在加载模型: {checkpoint_path} ({args.model} 约束)...")
+        model, data, config, transformer = load_model(checkpoint_path, device)
+        use_hard_constraint = config.get('use_hard_constraint', False)
+        cities = data['cities']
+        test_X = data['test_X']
+        test_y = data['test_y']
+        test_dates = get_test_dates(data)
+        print(f"模型加载完成！城市数量: {len(cities)}，测试集: {len(test_X)}")
+        edge_index = create_fully_connected_graph(len(cities)).to(device)
+        horizons = [3, 7, 14, 30]
+        print("\n开始多步预测评估...")
+        city_metrics, all_predictions, all_targets = evaluate_multi_step_by_city(
+            model, test_X, test_y, edge_index, device, cities, transformer, horizons, use_hard_constraint=use_hard_constraint
+        )
+        for horizon in horizons:
+            all_mae = [city_metrics[city][horizon]['MAE'] for city in cities]
+            all_rmse = [city_metrics[city][horizon]['RMSE'] for city in cities]
+            print(f"  {horizon}天 平均MAE: {np.mean(all_mae):.4f}, RMSE: {np.mean(all_rmse):.4f}")
+        print("\n生成可视化图表...")
+        plot_city_metrics_bar(city_metrics, cities, horizons, output_dir)
+        plot_city_time_series(all_predictions, all_targets, cities, horizons, test_dates, output_dir)
+        plot_horizon_comparison(all_predictions, all_targets, cities, horizons, test_dates, output_dir)
+        save_metrics_to_csv(city_metrics, cities, horizons, output_dir)
     
     if torch.cuda.is_available():
-        print(f"\n最终显存使用: {torch.cuda.memory_allocated() / 1024**3:.2f} GB")
-        print(f"峰值显存使用: {torch.cuda.max_memory_allocated() / 1024**3:.2f} GB")
-    
+        print(f"\n峰值显存使用: {torch.cuda.max_memory_allocated() / 1024**3:.2f} GB")
     print("\n" + "=" * 80)
     print("可视化完成！")
+    print(f"结果目录: {output_dir}")
+    if args.model == 'both':
+        print(f"  - city_predictions/fig2_*_timeseries.png: 每城市 真实值+软+硬(7天预测)")
+        print(f"  - city_predictions/fig3_*_horizon_comparison.png: 每城市 2x2 各horizon 真实值+软+硬")
     print("=" * 80)
-    print(f"\n所有结果已保存到文件夹: {output_dir}")
-    print(f"  - fig1_mae_by_city_horizon.png: MAE柱状图")
-    print(f"  - fig1_rmse_by_city_horizon.png: RMSE柱状图")
-    print(f"  - fig1_mae_rmse_combined.png: MAE和RMSE组合图")
-    print(f"  - fig2_city_timeseries_summary.png: 城市时间序列汇总图（2020-2024）")
-    print(f"  - city_predictions/fig2_*_timeseries.png: 每个城市的完整时间序列图")
-    print(f"  - city_predictions/fig3_*_horizon_comparison.png: 每个城市的多horizon对比图")
-    print(f"  - mae_by_city_horizon.csv: MAE数据表")
-    print(f"  - rmse_by_city_horizon.csv: RMSE数据表")
 
 
 if __name__ == "__main__":
