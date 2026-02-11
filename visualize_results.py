@@ -59,10 +59,12 @@ class DataTransformer:
 
 
 def load_model(checkpoint_path, device='cuda' if torch.cuda.is_available() else 'cpu'):
-    """加载训练好的v2模型"""
+    """加载训练好的v2模型，config 中含 use_hard_constraint 供推理时使用"""
     checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
     config = checkpoint['config']
     scaler = checkpoint['scaler']
+    # 兼容旧 checkpoint
+    config['use_hard_constraint'] = config.get('use_hard_constraint', False)
     
     with open('processed_data.pkl', 'rb') as f:
         data = pickle.load(f)
@@ -90,17 +92,17 @@ def load_model(checkpoint_path, device='cuda' if torch.cuda.is_available() else 
     return model, data, config, transformer
 
 
-def batch_predict_one_step(model, batch_windows, edge_index, device):
+def batch_predict_one_step(model, batch_windows, edge_index, device, use_hard_constraint=False):
     """
     批量预测下一天（单步）
     """
     x = torch.FloatTensor(batch_windows).to(device)
     with torch.no_grad():
-        predictions = model(x, edge_index, return_sis=False)
+        predictions = model(x, edge_index, return_sis=False, use_hard_constraint=use_hard_constraint)
     return predictions.cpu().numpy()
 
 
-def batch_predict_multiple_days(model, initial_windows, num_days, edge_index, device, batch_size=BATCH_SIZE):
+def batch_predict_multiple_days(model, initial_windows, num_days, edge_index, device, batch_size=BATCH_SIZE, use_hard_constraint=False):
     """
     批量预测未来多天（自回归方式，高效批量版本）
     """
@@ -117,7 +119,7 @@ def batch_predict_multiple_days(model, initial_windows, num_days, edge_index, de
         for start_idx in range(0, n_samples, batch_size):
             end_idx = min(start_idx + batch_size, n_samples)
             batch_windows = current_windows[start_idx:end_idx]
-            batch_pred = batch_predict_one_step(model, batch_windows, edge_index, device)
+            batch_pred = batch_predict_one_step(model, batch_windows, edge_index, device, use_hard_constraint=use_hard_constraint)
             day_predictions[start_idx:end_idx] = batch_pred
         
         all_predictions[:, day, :] = day_predictions
@@ -151,7 +153,7 @@ def get_test_dates(data):
     return test_dates
 
 
-def evaluate_multi_step_by_city(model, test_X, test_y, edge_index, device, cities, transformer, horizons=[3, 7, 14, 30]):
+def evaluate_multi_step_by_city(model, test_X, test_y, edge_index, device, cities, transformer, horizons=[3, 7, 14, 30], use_hard_constraint=False):
     """
     按城市评估不同预测步长的性能（高效批量版本）
     返回每个时间点的预测值，用于绘制完整时间序列
@@ -187,7 +189,7 @@ def evaluate_multi_step_by_city(model, test_X, test_y, edge_index, device, citie
         print(f"开始批量预测（batch_size={BATCH_SIZE}）...")
         # 预测（在变换后的空间中）
         predictions_transformed = batch_predict_multiple_days(
-            model, initial_windows, horizon, edge_index, device, BATCH_SIZE
+            model, initial_windows, horizon, edge_index, device, BATCH_SIZE, use_hard_constraint=use_hard_constraint
         )
         
         # 反变换预测结果到原始尺度
@@ -542,13 +544,21 @@ def save_metrics_to_csv(city_metrics, cities, horizons, output_dir):
 
 
 def main():
+    import argparse
+    parser = argparse.ArgumentParser(description='可视化预测结果，可选软约束或硬约束模型')
+    parser.add_argument('--model', type=str, choices=['soft', 'hard'], default='soft',
+                        help='使用哪个模型: soft=软约束权重, hard=硬约束权重')
+    args = parser.parse_args()
+    
     output_dir = ensure_output_dir()
     
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
     print(f"使用设备: {device}")
     
-    print("\n正在加载模型（v2版本）...")
-    model, data, config, transformer = load_model('checkpoints/best_model.pth', device)
+    checkpoint_path = f'checkpoints/best_model_{args.model}.pth'
+    print(f"\n正在加载模型: {checkpoint_path} ({args.model} 约束)...")
+    model, data, config, transformer = load_model(checkpoint_path, device)
+    use_hard_constraint = config.get('use_hard_constraint', False)
     
     cities = data['cities']
     test_X = data['test_X']
@@ -571,7 +581,8 @@ def main():
     print("=" * 80)
     
     city_metrics, all_predictions, all_targets = evaluate_multi_step_by_city(
-        model, test_X, test_y, edge_index, device, cities, transformer, horizons
+        model, test_X, test_y, edge_index, device, cities, transformer, horizons,
+        use_hard_constraint=use_hard_constraint
     )
     
     print("\n" + "=" * 80)

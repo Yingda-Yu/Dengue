@@ -31,14 +31,14 @@ def main():
     else:
         print("\n步骤 1/3: 数据预处理 (已存在，跳过)")
     
-    # 步骤2: 训练模型
-    print("\n步骤 2/3: 训练模型")
-    run_command("python train.py", "正在训练模型...")
+    # 步骤2: 训练模型（默认软约束；需硬约束请再运行 python train.py --constraint hard）
+    print("\n步骤 2/3: 训练模型（软约束）")
+    run_command("python train.py --constraint soft", "正在训练软约束模型...")
     
-    # 步骤3: 可视化结果
-    if os.path.exists('checkpoints/test_results.pkl'):
-        print("\n步骤 3/3: 可视化结果")
-        run_command("python visualize_results.py", "正在生成可视化...")
+    # 步骤3: 可视化结果（软约束）
+    if os.path.exists('checkpoints/test_results_soft.pkl'):
+        print("\n步骤 3/3: 可视化结果（软约束模型）")
+        run_command("python visualize_results.py --model soft", "正在生成可视化...")
     else:
         print("\n步骤 3/3: 可视化结果 (测试结果不存在，跳过)")
     
@@ -47,12 +47,13 @@ def main():
     print("=" * 60)
     print("\n生成的文件:")
     print("  - processed_data.pkl: 预处理后的数据")
-    print("  - checkpoints/best_model.pth: 最佳模型权重")
-    print("  - checkpoints/test_results.pkl: 测试结果")
-    print("  - training_curves.png: 训练曲线")
-    print("  - predictions.png: 预测对比图")
-    print("  - time_series.png: 时间序列图")
-    print("  - error_distribution.png: 误差分布图")
+    print("  - checkpoints/best_model_soft.pth / best_mae_model_soft.pth: 软约束模型权重")
+    print("  - checkpoints/test_results_soft.pkl, training_curves_soft.png")
+    print("  - visualization_results/: 可视化图表")
+    print("\n若要训练硬约束并对比:")
+    print("  python train.py --constraint hard")
+    print("  python visualize_results.py --model hard")
+    print("  python compare_models.py   # 生成软 vs 硬 对比表与图")
 
 if __name__ == "__main__":
     main()

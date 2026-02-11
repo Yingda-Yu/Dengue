@@ -22,6 +22,7 @@ from tqdm import tqdm
 import matplotlib.pyplot as plt
 from model import EpidemiologyGNNv2, create_fully_connected_graph
 import time
+import argparse
 
 
 class DengueDataset(Dataset):
@@ -157,7 +158,7 @@ class EarlyStopping:
 
 
 def train_epoch(model, dataloader, criterion, optimizer, device, edge_index, 
-                scaler_amp=None, grad_clip=1.0):
+                scaler_amp=None, grad_clip=1.0, use_hard_constraint=False):
     """训练一个epoch"""
     model.train()
     total_loss = 0.0
@@ -174,7 +175,7 @@ def train_epoch(model, dataloader, criterion, optimizer, device, edge_index,
         
         if scaler_amp is not None:
             with torch.amp.autocast('cuda'):
-                predictions, sis_predictions = model(X, edge_index, return_sis=True)
+                predictions, sis_predictions = model(X, edge_index, return_sis=True, use_hard_constraint=use_hard_constraint)
                 loss, mse, mae, sis = criterion(predictions, y, sis_predictions)
             
             scaler_amp.scale(loss).backward()
@@ -186,7 +187,7 @@ def train_epoch(model, dataloader, criterion, optimizer, device, edge_index,
             scaler_amp.step(optimizer)
             scaler_amp.update()
         else:
-            predictions, sis_predictions = model(X, edge_index, return_sis=True)
+            predictions, sis_predictions = model(X, edge_index, return_sis=True, use_hard_constraint=use_hard_constraint)
             loss, mse, mae, sis = criterion(predictions, y, sis_predictions)
             loss.backward()
             
@@ -212,7 +213,7 @@ def train_epoch(model, dataloader, criterion, optimizer, device, edge_index,
 
 
 @torch.no_grad()
-def evaluate(model, dataloader, criterion, device, edge_index, dataset=None):
+def evaluate(model, dataloader, criterion, device, edge_index, dataset=None, use_hard_constraint=False):
     """评估模型"""
     model.eval()
     total_loss = 0.0
@@ -226,7 +227,7 @@ def evaluate(model, dataloader, criterion, device, edge_index, dataset=None):
         X = X.to(device)
         y = y.to(device)
         
-        predictions, sis_predictions = model(X, edge_index, return_sis=True)
+        predictions, sis_predictions = model(X, edge_index, return_sis=True, use_hard_constraint=use_hard_constraint)
         loss, mse, mae, sis = criterion(predictions, y, sis_predictions)
         
         total_loss += loss.item()
@@ -314,6 +315,13 @@ def plot_training_curves(history, save_path='training_curves_v2.png'):
 
 
 def main():
+    parser = argparse.ArgumentParser(description='训练软约束或硬约束模型')
+    parser.add_argument('--constraint', type=str, choices=['soft', 'hard'], default='soft',
+                        help='soft=软约束(SIS仅作损失项), hard=硬约束(输出=SIS+NN残差)')
+    args = parser.parse_args()
+    constraint_mode = args.constraint
+    use_hard_constraint = (constraint_mode == 'hard')
+    
     # 配置
     config = {
         'data_path': 'processed_data.pkl',
@@ -328,7 +336,8 @@ def main():
         # 损失函数权重
         'lambda_mae': 0.5,  # 增加MAE权重
         'lambda_outbreak': 0.3,  # 增加爆发期权重
-        'lambda_sis': 0.05,  # 减小SIS权重
+        'lambda_sis': 0.05,  # 软约束时SIS损失权重；硬约束时设为0
+        'lambda_sis_hard': 0.0,  # 硬约束时不再加SIS一致性损失
         
         # 模型配置
         'spatial_hidden_dim': 128,  # 增加隐藏维度
@@ -341,13 +350,19 @@ def main():
         'device': 'cuda' if torch.cuda.is_available() else 'cpu',
         'save_dir': 'checkpoints',
         'use_amp': True,
+        'constraint_mode': constraint_mode,
+        'use_hard_constraint': use_hard_constraint,
     }
+    
+    # 硬约束时 SIS 仅体现在结构上，损失中不再加 L_SIS
+    lambda_sis = config['lambda_sis_hard'] if use_hard_constraint else config['lambda_sis']
     
     os.makedirs(config['save_dir'], exist_ok=True)
     
     print("=" * 70)
     print("Improved Epidemiology-Informed Spatio-Temporal GNN Training")
     print("=" * 70)
+    print(f"约束模式: {constraint_mode} (use_hard_constraint={use_hard_constraint})")
     print(f"设备: {config['device']}")
     print(f"配置: {config}")
     print("=" * 70)
@@ -415,11 +430,11 @@ def main():
     num_params = sum(p.numel() for p in model.parameters())
     print(f"模型参数数量: {num_params:,}")
     
-    # 损失函数
+    # 损失函数（硬约束时 lambda_sis=0）
     criterion = CombinedLoss(
         lambda_mae=config['lambda_mae'],
         lambda_outbreak=config['lambda_outbreak'],
-        lambda_sis=config['lambda_sis']
+        lambda_sis=lambda_sis
     )
     
     # 优化器
@@ -452,6 +467,7 @@ def main():
     
     best_val_loss = float('inf')
     best_val_mae = float('inf')
+    best_model_path = os.path.join(config['save_dir'], f'best_model_{constraint_mode}.pth')
     
     print("\n开始训练...")
     start_time = time.time()
@@ -462,7 +478,8 @@ def main():
         # 训练
         train_metrics = train_epoch(
             model, train_loader, criterion, optimizer, 
-            config['device'], edge_index, scaler_amp, config['grad_clip']
+            config['device'], edge_index, scaler_amp, config['grad_clip'],
+            use_hard_constraint=config['use_hard_constraint']
         )
         
         # 更新学习率（每个batch后已更新，这里记录当前lr）
@@ -470,7 +487,8 @@ def main():
         
         # 验证
         val_metrics = evaluate(model, val_loader, criterion, 
-                              config['device'], edge_index, val_dataset)
+                              config['device'], edge_index, val_dataset,
+                              use_hard_constraint=config['use_hard_constraint'])
         
         # 记录历史
         history['train_loss'].append(train_metrics['loss'])
@@ -500,10 +518,11 @@ def main():
                 'val_rmse': val_metrics['rmse_orig'],
                 'config': config,
                 'scaler': scaler
-            }, os.path.join(config['save_dir'], 'best_model.pth'))
-            print(f"  ✓ 保存最佳模型 (Val Loss: {val_metrics['loss']:.4f})")
+            }, best_model_path)
+            print(f"  ✓ 保存最佳模型 (Val Loss: {val_metrics['loss']:.4f}) -> {best_model_path}")
         
         # 保存最佳MAE模型
+        best_mae_path = os.path.join(config['save_dir'], f'best_mae_model_{constraint_mode}.pth')
         if val_metrics['mae_orig'] < best_val_mae:
             best_val_mae = val_metrics['mae_orig']
             torch.save({
@@ -512,8 +531,8 @@ def main():
                 'val_mae': val_metrics['mae_orig'],
                 'config': config,
                 'scaler': scaler
-            }, os.path.join(config['save_dir'], 'best_mae_model.pth'))
-            print(f"  ✓ 保存最佳MAE模型 (Val MAE: {val_metrics['mae_orig']:.4f})")
+            }, best_mae_path)
+            print(f"  ✓ 保存最佳MAE模型 (Val MAE: {val_metrics['mae_orig']:.4f}) -> {best_mae_path}")
         
         # 更新学习率调度器
         scheduler.step()
@@ -527,19 +546,20 @@ def main():
     print(f"\n训练完成！总用时: {total_time/60:.1f} 分钟")
     
     # 绘制训练曲线
-    plot_training_curves(history, os.path.join(config['save_dir'], 'training_curves.png'))
+    plot_training_curves(history, os.path.join(config['save_dir'], f'training_curves_{constraint_mode}.png'))
     
     # 测试
     print("\n" + "=" * 70)
     print("在测试集上评估...")
     print("=" * 70)
     
-    # 加载最佳模型
-    checkpoint = torch.load(os.path.join(config['save_dir'], 'best_model.pth'), weights_only=False)
+    # 加载最佳模型（与当前约束模式一致）
+    checkpoint = torch.load(best_model_path, weights_only=False)
     model.load_state_dict(checkpoint['model_state_dict'])
     
     test_metrics = evaluate(model, test_loader, criterion, 
-                           config['device'], edge_index, test_dataset)
+                           config['device'], edge_index, test_dataset,
+                           use_hard_constraint=config['use_hard_constraint'])
     
     print(f"测试损失: {test_metrics['loss']:.4f}")
     print(f"测试 MAE: {test_metrics['mae_orig']:.4f}")
@@ -557,10 +577,11 @@ def main():
         'scaler': scaler
     }
     
-    with open(os.path.join(config['save_dir'], 'test_results.pkl'), 'wb') as f:
+    results_path = os.path.join(config['save_dir'], f'test_results_{constraint_mode}.pkl')
+    with open(results_path, 'wb') as f:
         pickle.dump(results, f)
     
-    print(f"\n测试结果已保存到 {config['save_dir']}/test_results.pkl")
+    print(f"\n测试结果已保存到 {results_path}")
     print("\n训练完成！")
 
 

@@ -63,39 +63,55 @@ This will:
 - Split into train/validation/test sets (2000-2020 for training, 2020-2024 for testing)
 - Save preprocessed data to `processed_data.pkl`
 
-#### Step 2: Train Model
+#### Step 2: Train Model (Soft or Hard Constraint)
 
 ```bash
-python train.py
+# 软约束（SIS 仅作损失项）
+python train.py --constraint soft
+
+# 硬约束（输出 = SIS + NN 残差）
+python train.py --constraint hard
 ```
 
-The training process will:
-- Load preprocessed data
-- Create fully-connected graph structure
-- Initialize the EpidemiologyGNNv2 model
-- Train with combined loss (MSE + MAE + Outbreak-weighted + SIS consistency)
-- Use mixed precision training (AMP) for efficiency
-- Apply early stopping and cosine annealing learning rate schedule
-- Save best model and training curves
+- Saves: `checkpoints/best_model_soft.pth` / `best_model_hard.pth`, and `best_mae_model_soft.pth` / `best_mae_model_hard.pth`.
+- Training uses the same pipeline (AMP, early stopping, etc.); hard constraint sets λ_SIS=0 in the loss.
 
-#### Step 3: Visualize Results
+#### Step 3: Visualize Results (Choose Which Model)
 
 ```bash
-python visualize_results.py
+python visualize_results.py --model soft   # 使用软约束权重
+python visualize_results.py --model hard  # 使用硬约束权重
 ```
 
-This generates:
-- MAE/RMSE metrics by city for different forecast horizons (3, 7, 14, 30 days)
-- Time series prediction plots for each city
-- Horizon comparison plots (2x2 grid for each city)
-- All outputs are saved to `visualization_results/`
+This generates MAE/RMSE by city and horizon, time series plots, and horizon comparison figures under `visualization_results/`.
 
 #### Step 4: Run Inference
 
 ```bash
-# Predict using test data for 7 days ahead
-python inference.py --checkpoint checkpoints/best_model.pth --days 7 --use_test_data
+# 使用软约束模型预测 7 天
+python inference.py --model soft --days 7 --use_test_data
+
+# 使用硬约束模型
+python inference.py --model hard --days 7 --use_test_data
+
+# 或指定 checkpoint 路径
+python inference.py --checkpoint checkpoints/best_model_soft.pth --days 7 --use_test_data
 ```
+
+#### Step 5: Compare Soft vs Hard Constraint
+
+After training both models:
+
+```bash
+python compare_models.py
+```
+
+This produces under `visualization_results/soft_vs_hard_comparison/`:
+- `comparison_table.csv`: MAE/RMSE per city and horizon, with which model is better.
+- `comparison_summary_by_horizon.csv`: Average MAE/RMSE by forecast horizon.
+- `fig_comparison_mae_rmse_by_city.png`: Bar charts of MAE and RMSE by city.
+- `fig_comparison_by_horizon.png`: MAE/RMSE by horizon.
+- `fig_comparison_timeseries_sample.png`: Example time series (Actual vs Soft vs Hard).
 
 ## Model Configuration
 
@@ -165,12 +181,14 @@ Where:
 After training, the following files are generated:
 
 - `processed_data.pkl`: Preprocessed data
-- `checkpoints/best_model.pth`: Best model weights with scaler information
-- `checkpoints/test_results.pkl`: Test set results
-- `checkpoints/training_curves.png`: Training curves
-- `visualization_results/`: Visualization outputs
+- `checkpoints/best_model_soft.pth`, `checkpoints/best_model_hard.pth`: Best model weights (by validation loss)
+- `checkpoints/best_mae_model_soft.pth`, `checkpoints/best_mae_model_hard.pth`: Best-by-MAE weights
+- `checkpoints/test_results_soft.pkl`, `test_results_hard.pkl`: Test set results
+- `checkpoints/training_curves_soft.png`, `training_curves_hard.png`: Training curves
+- `visualization_results/`: Visualization outputs (use `--model soft` or `--model hard`)
   - `fig1_*.png`: MAE/RMSE metrics by city and horizon
   - `city_predictions/`: Per-city prediction plots
+- `visualization_results/soft_vs_hard_comparison/`: Output of `compare_models.py` (tables and comparison figures)
 
 ## Evaluation Metrics
 

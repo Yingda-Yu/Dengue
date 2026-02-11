@@ -363,7 +363,7 @@ class EpidemiologyGNNv2(nn.Module):
                     elif 'bias' in name:
                         nn.init.zeros_(param)
     
-    def forward(self, x, edge_index=None, return_sis=False):
+    def forward(self, x, edge_index=None, return_sis=False, use_hard_constraint=False):
         """
         前向传播
         
@@ -371,6 +371,7 @@ class EpidemiologyGNNv2(nn.Module):
             x: (batch, window_size, num_cities) 输入序列
             edge_index: 图边索引（可选，当前使用全连接注意力）
             return_sis: 是否返回SIS预测
+            use_hard_constraint: 若True则硬约束 output=SIS(I_last)+softplus(NN残差)；否则软约束 output=softplus(NN)+残差
         
         Returns:
             predictions: (batch, num_cities) 预测值
@@ -401,20 +402,22 @@ class EpidemiologyGNNv2(nn.Module):
         temporal_out = self.temporal_encoder(temporal_input)  # (batch * num_cities, temporal_hidden_dim)
         temporal_out = temporal_out.view(batch_size, num_cities, -1)  # (batch, num_cities, temporal_hidden_dim)
         
-        # 4. 输出预测
-        predictions = self.output_head(temporal_out).squeeze(-1)  # (batch, num_cities)
-        
-        # 5. 残差连接：加上最后一个时间步的输入
+        # 4. NN 原始输出（未加残差、未 softplus）
+        nn_raw = self.output_head(temporal_out).squeeze(-1)  # (batch, num_cities)
         last_input = x[:, -1, :]  # (batch, num_cities)
-        predictions = predictions + self.residual_weight * last_input
         
-        # 6. 确保非负输出
-        predictions = F.softplus(predictions)  # 使用softplus确保正值且平滑
-        
-        # 7. SIS预测
+        # 5 & 6. 软约束 vs 硬约束
         sis_predictions = None
-        if self.use_sis and return_sis:
+        if self.use_sis:
             sis_predictions = self.sis_model(last_input)
+        
+        if use_hard_constraint and self.use_sis and sis_predictions is not None:
+            # 硬约束：output = SIS(I_last) + softplus(NN残差)
+            predictions = sis_predictions + F.softplus(nn_raw)
+        else:
+            # 软约束：output = softplus(NN + 残差连接)
+            predictions = nn_raw + self.residual_weight * last_input
+            predictions = F.softplus(predictions)
         
         if return_sis:
             return predictions, sis_predictions

@@ -1,156 +1,144 @@
 """
-使用训练好的模型进行预测
+使用训练好的模型进行预测（支持软约束/硬约束模型选择）
 """
 import torch
 import pickle
 import numpy as np
-from model import EpidemiologyGNN, create_fully_connected_graph
+from model import EpidemiologyGNNv2, create_fully_connected_graph
+
+
+class DataTransformer:
+    """与训练时一致的数据变换"""
+    def __init__(self, scaler):
+        self.log_mean = scaler['log_mean']
+        self.log_std = scaler['log_std']
+
+    def transform(self, data):
+        data_log = np.log1p(data)
+        return (data_log - self.log_mean) / self.log_std
+
+    def inverse_transform(self, data):
+        if isinstance(data, torch.Tensor):
+            data = data.numpy()
+        data = data * self.log_std + self.log_mean
+        return np.maximum(np.expm1(data), 0)
+
 
 def load_model(checkpoint_path, device='cuda' if torch.cuda.is_available() else 'cpu'):
-    """加载训练好的模型"""
+    """加载 v2 模型，支持软/硬约束 checkpoint"""
     checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
     config = checkpoint['config']
-    
-    # 加载数据以获取城市信息
+    scaler = checkpoint['scaler']
+    config['use_hard_constraint'] = config.get('use_hard_constraint', False)
+
     with open('processed_data.pkl', 'rb') as f:
         data = pickle.load(f)
-    
+
     num_cities = len(data['cities'])
-    
-    # 创建模型
-    model = EpidemiologyGNN(
+    window_size = data['window_size']
+
+    model = EpidemiologyGNNv2(
         num_cities=num_cities,
-        gcn_hidden_dim=config['gcn_hidden_dim'],
-        gcn_num_layers=config['gcn_num_layers'],
-        lstm_hidden_dim=config['lstm_hidden_dim'],
-        lstm_num_layers=config['lstm_num_layers'],
+        window_size=window_size,
+        spatial_hidden_dim=config['spatial_hidden_dim'],
+        temporal_hidden_dim=config['temporal_hidden_dim'],
+        num_spatial_layers=config['num_spatial_layers'],
+        num_temporal_layers=config['num_temporal_layers'],
         dropout=config['dropout'],
-        use_sis=config['use_sis'],
-        learnable_sis_params=config['learnable_sis_params']
+        use_sis=config['use_sis']
     ).to(device)
-    
-    # 加载权重
+
     model.load_state_dict(checkpoint['model_state_dict'])
     model.eval()
-    
-    return model, data['cities'], config
+    transformer = DataTransformer(scaler)
+    return model, data['cities'], config, transformer
 
-def predict_next_day(model, historical_data, edge_index, device):
+
+def predict_next_day(model, historical_data, edge_index, device, use_hard_constraint=False):
     """
-    预测下一天的病例数
-    
-    Args:
-        model: 训练好的模型
-        historical_data: 历史数据，形状 (window_size, num_cities)
-        edge_index: 图边索引
-        device: 设备
-    
-    Returns:
-        predictions: 预测值，形状 (num_cities,)
+    预测下一天（historical_data 应为已变换后的数据）
+    返回变换空间预测值（用于自回归下一步），调用方需自行 inverse 得到原始尺度
     """
-    # 添加批次维度
-    x = torch.FloatTensor(historical_data).unsqueeze(0).to(device)  # (1, window_size, num_cities)
-    
+    x = torch.FloatTensor(historical_data).unsqueeze(0).to(device)
     with torch.no_grad():
-        predictions = model(x, edge_index, return_sis=False)
-        predictions = predictions.squeeze(0).cpu().numpy()  # (num_cities,)
-    
-    return predictions
+        predictions = model(x, edge_index, return_sis=False, use_hard_constraint=use_hard_constraint)
+    return predictions.squeeze(0).cpu().numpy()
 
-def predict_multiple_days(model, initial_data, num_days, edge_index, device):
+
+def predict_multiple_days(model, initial_data_transformed, num_days, edge_index, device, transformer, use_hard_constraint=False):
     """
-    预测未来多天的病例数（使用自回归方式）
-    
-    Args:
-        model: 训练好的模型
-        initial_data: 初始数据，形状 (window_size, num_cities)
-        num_days: 要预测的天数
-        edge_index: 图边索引
-        device: 设备
-    
-    Returns:
-        predictions: 预测值，形状 (num_days, num_cities)
+    预测未来多天（自回归）。initial_data_transformed 为已变换的 (window_size, num_cities）
+    返回 (num_days, num_cities) 原始尺度的预测
     """
-    window_size = initial_data.shape[0]
-    predictions = []
-    current_window = initial_data.copy()
-    
+    current_window = np.array(initial_data_transformed, dtype=np.float32)
+    predictions_orig = []
     for day in range(num_days):
-        # 预测下一天
-        next_day = predict_next_day(model, current_window, edge_index, device)
-        predictions.append(next_day)
-        
-        # 更新窗口（滑动窗口）
-        current_window = np.vstack([current_window[1:], next_day.reshape(1, -1)])
-    
-    return np.array(predictions)
+        pred_t = predict_next_day(model, current_window, edge_index, device, use_hard_constraint=use_hard_constraint)
+        pred_orig = transformer.inverse_transform(pred_t)
+        predictions_orig.append(pred_orig)
+        current_window = np.vstack([current_window[1:], pred_t])
+    return np.array(predictions_orig)
+
 
 def main():
     import argparse
-    
+
     parser = argparse.ArgumentParser(description='使用训练好的模型进行预测')
-    parser.add_argument('--checkpoint', type=str, default='checkpoints/best_model.pth',
-                        help='模型检查点路径')
-    parser.add_argument('--days', type=int, default=7,
-                        help='要预测的天数')
-    parser.add_argument('--use_test_data', action='store_true',
-                        help='使用测试集数据进行预测')
-    
+    parser.add_argument('--checkpoint', type=str, default=None, help='模型检查点路径（若指定则覆盖 --model）')
+    parser.add_argument('--model', type=str, choices=['soft', 'hard'], default='soft', help='软约束或硬约束权重')
+    parser.add_argument('--days', type=int, default=7, help='要预测的天数')
+    parser.add_argument('--use_test_data', action='store_true', help='使用测试集数据进行预测')
     args = parser.parse_args()
-    
+
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
     print(f"使用设备: {device}")
-    
-    # 加载模型
-    print("正在加载模型...")
-    model, cities, config = load_model(args.checkpoint, device)
-    print(f"模型加载完成！城市数量: {len(cities)}")
-    
-    # 创建图
+
+    checkpoint_path = args.checkpoint or f'checkpoints/best_model_{args.model}.pth'
+    print(f"正在加载模型: {checkpoint_path}")
+    model, cities, config, transformer = load_model(checkpoint_path, device)
+    use_hard_constraint = config.get('use_hard_constraint', False)
+    print(f"模型加载完成！城市数量: {len(cities)}, 硬约束: {use_hard_constraint}")
+
     edge_index = create_fully_connected_graph(len(cities)).to(device)
-    
-    # 加载数据
+
     with open('processed_data.pkl', 'rb') as f:
         data = pickle.load(f)
-    
+
     if args.use_test_data:
-        # 使用测试集的最后一个窗口
         test_X = data['test_X']
-        initial_data = test_X[-1]  # 最后一个样本
+        initial_data_raw = test_X[-1]
         true_values = data['test_y'][-1]
         print("\n使用测试集数据进行预测...")
     else:
-        # 使用验证集的最后一个窗口
         val_X = data['val_X']
-        initial_data = val_X[-1]
+        initial_data_raw = val_X[-1]
+        true_values = None
         print("\n使用验证集数据进行预测...")
-    
-    print(f"初始数据形状: {initial_data.shape}")
-    print(f"窗口大小: {data['window_size']}")
-    
-    # 进行预测
+
+    initial_data = transformer.transform(initial_data_raw)
+    if initial_data.ndim == 3:
+        initial_data = initial_data[0]
+    print(f"初始数据形状: {initial_data.shape}, 窗口大小: {data['window_size']}")
+
     print(f"\n正在预测未来 {args.days} 天...")
     predictions = predict_multiple_days(
-        model, initial_data, args.days, edge_index, device
+        model, initial_data, args.days, edge_index, device, transformer, use_hard_constraint=use_hard_constraint
     )
-    
-    # 打印结果
+
     print("\n" + "=" * 60)
     print("预测结果")
     print("=" * 60)
-    
+
     for day in range(args.days):
         print(f"\n第 {day + 1} 天预测:")
         print("-" * 60)
-        # 显示前10个城市的预测
         top_cities_idx = np.argsort(predictions[day])[-10:][::-1]
         for idx in top_cities_idx:
             city_name = cities[idx]
             pred_value = predictions[day, idx]
             print(f"  {city_name:20s}: {pred_value:8.2f} 例")
-    
-    # 如果有真实值，计算误差
-    if args.use_test_data:
+
+    if args.use_test_data and true_values is not None:
         print("\n" + "=" * 60)
         print("与真实值对比（第1天）:")
         print("=" * 60)
@@ -159,7 +147,6 @@ def main():
         print(f"MAE: {mae:.4f}")
         print(f"RMSE: {rmse:.4f}")
 
+
 if __name__ == "__main__":
     main()
-
-
