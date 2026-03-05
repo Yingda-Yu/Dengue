@@ -315,12 +315,13 @@ def plot_training_curves(history, save_path='training_curves_v2.png'):
 
 
 def main():
-    parser = argparse.ArgumentParser(description='训练软约束或硬约束模型')
-    parser.add_argument('--constraint', type=str, choices=['soft', 'hard'], default='soft',
-                        help='soft=软约束(SIS仅作损失项), hard=硬约束(输出=SIS+NN残差)')
+    parser = argparse.ArgumentParser(description='训练软约束、硬约束或无约束模型')
+    parser.add_argument('--constraint', type=str, choices=['soft', 'hard', 'none'], default='soft',
+                        help='soft=软约束(SIS仅作损失项), hard=硬约束(输出=SIS+NN残差), none=无SIS基线')
     args = parser.parse_args()
     constraint_mode = args.constraint
     use_hard_constraint = (constraint_mode == 'hard')
+    use_sis = (constraint_mode != 'none')  # 无约束时不使用 SIS 模块
     
     # 配置
     config = {
@@ -336,7 +337,7 @@ def main():
         # 损失函数权重
         'lambda_mae': 0.5,  # 增加MAE权重
         'lambda_outbreak': 0.3,  # 增加爆发期权重
-        'lambda_sis': 0.05,  # 软约束时SIS损失权重；硬约束时设为0
+        'lambda_sis': 0.05,  # 软约束时SIS损失权重；硬约束/无约束时设为0
         'lambda_sis_hard': 0.0,  # 硬约束时不再加SIS一致性损失
         
         # 模型配置
@@ -345,7 +346,7 @@ def main():
         'num_spatial_layers': 3,  # 增加层数
         'num_temporal_layers': 3,  # 增加层数
         'dropout': 0.15,  # 稍微减小dropout
-        'use_sis': True,
+        'use_sis': use_sis,
         
         'device': 'cuda' if torch.cuda.is_available() else 'cpu',
         'save_dir': 'checkpoints',
@@ -354,15 +355,15 @@ def main():
         'use_hard_constraint': use_hard_constraint,
     }
     
-    # 硬约束时 SIS 仅体现在结构上，损失中不再加 L_SIS
-    lambda_sis = config['lambda_sis_hard'] if use_hard_constraint else config['lambda_sis']
+    # 硬约束/无约束时损失中不加 L_SIS
+    lambda_sis = config['lambda_sis'] if (constraint_mode == 'soft') else config['lambda_sis_hard']
     
     os.makedirs(config['save_dir'], exist_ok=True)
     
     print("=" * 70)
     print("Improved Epidemiology-Informed Spatio-Temporal GNN Training")
     print("=" * 70)
-    print(f"约束模式: {constraint_mode} (use_hard_constraint={use_hard_constraint})")
+    print(f"约束模式: {constraint_mode} (use_sis={use_sis}, use_hard_constraint={use_hard_constraint})")
     print(f"设备: {config['device']}")
     print(f"配置: {config}")
     print("=" * 70)

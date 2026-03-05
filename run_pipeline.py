@@ -50,10 +50,11 @@ def main():
     print("  - checkpoints/best_model_soft.pth / best_mae_model_soft.pth: 软约束模型权重")
     print("  - checkpoints/test_results_soft.pkl, training_curves_soft.png")
     print("  - visualization_results/: 可视化图表")
-    print("\n若要训练硬约束并对比:")
+    print("\n若要训练硬约束与无约束并做三路对比:")
     print("  python train.py --constraint hard")
+    print("  python train.py --constraint none")
     print("  python visualize_results.py --model hard")
-    print("  python compare_models.py   # 生成软 vs 硬 对比表与图")
+    print("  python compare_models.py   # 生成软 vs 硬 vs 无约束 对比表与图")
 
 if __name__ == "__main__":
     main()

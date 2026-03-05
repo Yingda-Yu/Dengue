@@ -26,21 +26,21 @@
 ├── Dengue_Daily_EN.csv          # 原始数据
 ├── data_preprocessing.py        # 数据预处理
 ├── model.py                     # 模型定义 (EpidemiologyGNNv2)
-├── train.py                     # 训练（--constraint soft/hard）
+├── train.py                     # 训练（--constraint soft/hard/none）
 ├── inference.py                 # 单步/多步预测
 ├── visualize_results.py         # 可视化（--model soft/hard/both）
-├── compare_models.py            # 软 vs 硬 对比表格与图
+├── compare_models.py            # 软 vs 硬 vs 无约束 三路对比表格与图
 ├── run_pipeline.py              # 一键流程
 └── README.md
 ```
 
 ## Quick Start
 
-**推荐完整流程（得到软、硬两个模型及对比）：**  
+**推荐完整流程（得到软、硬、无约束三个模型及三路对比）：**  
 1) `python data_preprocessing.py`  
-2) `python train.py --constraint soft` → `python train.py --constraint hard`  
+2) `python train.py --constraint soft` → `python train.py --constraint hard` → `python train.py --constraint none`  
 3) `python visualize_results.py --model both`（生成每城市 真实值+软+硬 图）  
-4) `python compare_models.py`（生成对比表与图）
+4) `python compare_models.py`（生成软 vs 硬 vs 无约束 对比表与图）
 
 ### Option 1: One-Click Pipeline
 
@@ -70,9 +70,12 @@ python train.py --constraint soft
 
 # 硬约束（输出 = SIS + NN 残差）
 python train.py --constraint hard
+
+# 无约束（无 SIS 模块，纯 NN 基线，用于三路对比）
+python train.py --constraint none
 ```
 
-- Saves: `checkpoints/best_model_soft.pth` / `best_model_hard.pth`, and `best_mae_model_soft.pth` / `best_mae_model_hard.pth`.
+- Saves: `checkpoints/best_model_soft.pth` / `best_model_hard.pth` / `best_model_none.pth`, and corresponding `best_mae_model_*.pth`.
 - Training uses the same pipeline (AMP, early stopping, etc.); hard constraint sets λ_SIS=0 in the loss.
 
 #### Step 3: Visualize Results
@@ -101,18 +104,18 @@ python inference.py --checkpoint checkpoints/best_model_soft.pth --days 7 --use_
 
 #### Step 5: Compare Soft vs Hard Constraint
 
-After training both models:
+After training all three models (soft, hard, none):
 
 ```bash
 python compare_models.py
 ```
 
 This produces under `visualization_results/soft_vs_hard_comparison/`:
-- `comparison_table.csv`: MAE/RMSE per city and horizon, with which model is better.
-- `comparison_summary_by_horizon.csv`: Average MAE/RMSE by forecast horizon.
-- `fig_comparison_mae_rmse_by_city.png`: Bar charts of MAE and RMSE by city.
-- `fig_comparison_by_horizon.png`: MAE/RMSE by horizon.
-- `fig_comparison_timeseries_sample.png`: Example time series (Actual vs Soft vs Hard).
+- `comparison_table.csv`: MAE/RMSE per city and horizon for soft, hard, and no-constraint, with best model.
+- `comparison_summary_by_horizon.csv`: Average MAE/RMSE by forecast horizon (three columns) and best.
+- `fig_comparison_mae_rmse_by_city.png`: Bar charts of MAE and RMSE by city (three bars).
+- `fig_comparison_by_horizon.png`: MAE/RMSE by horizon (three bars).
+- `fig_comparison_timeseries_sample.png`: Example time series (Actual vs Soft vs Hard vs No constraint).
 
 ---
 
@@ -123,12 +126,13 @@ This produces under `visualization_results/soft_vs_hard_comparison/`:
 | 预处理 | `python data_preprocessing.py` | 无参数。生成 `processed_data.pkl`。 |
 | 训练 | `python train.py --constraint soft` | 训练软约束，保存 `best_model_soft.pth` 等。 |
 | 训练 | `python train.py --constraint hard` | 训练硬约束，保存 `best_model_hard.pth` 等。 |
+| 训练 | `python train.py --constraint none` | 训练无 SIS 基线，保存 `best_model_none.pth` 等。 |
 | 可视化 | `python visualize_results.py --model soft` | 使用软约束权重生成图表。 |
 | 可视化 | `python visualize_results.py --model hard` | 使用硬约束权重生成图表。 |
 | 可视化 | `python visualize_results.py --model both` | 双模型：city_predictions 每张图为真实值+软+硬。 |
 | 推理 | `python inference.py --model soft --days 7 --use_test_data` | 软约束预测 7 天；`--model` 可换为 `hard`。 |
 | 推理 | `python inference.py --checkpoint <path> --days N` | 指定 checkpoint 预测 N 天。 |
-| 对比 | `python compare_models.py` | 无参数。需先有 soft 与 hard 两个权重。 |
+| 对比 | `python compare_models.py` | 无参数。需先有 soft、hard、none 三个权重。 |
 | 一键 | `python run_pipeline.py` | 预处理 → 训练软约束 → 可视化软约束。 |
 
 **推理参数**：`--checkpoint` 可选，指定则覆盖 `--model`；`--days` 默认 7；`--use_test_data` 表示用测试集最后一窗口并输出 MAE/RMSE。
@@ -141,7 +145,7 @@ This produces under `visualization_results/soft_vs_hard_comparison/`:
 
 | 文件 | 说明 |
 |------|------|
-| `best_model_soft.pth` / `best_model_hard.pth` | 验证 loss 最优权重，含 config、scaler。 |
+| `best_model_soft.pth` / `best_model_hard.pth` / `best_model_none.pth` | 验证 loss 最优权重，含 config、scaler。 |
 | `best_mae_model_soft.pth` / `best_mae_model_hard.pth` | 验证 MAE 最优权重。 |
 | `test_results_soft.pkl` / `test_results_hard.pkl` | 测试集预测、真实值、指标。 |
 | `training_curves_soft.png` / `training_curves_hard.png` | 训练/验证 loss、MAE、RMSE、学习率曲线。 |
@@ -230,9 +234,9 @@ Where:
 ## Output Files（与上文「最终结果说明」对应）
 
 - `processed_data.pkl`：预处理后的训练/验证/测试数据。
-- `checkpoints/`：`best_model_soft.pth`、`best_model_hard.pth` 及对应 `best_mae_model_*.pth`、`test_results_*.pkl`、`training_curves_*.png`。
+- `checkpoints/`：`best_model_soft.pth`、`best_model_hard.pth`、`best_model_none.pth` 及对应 `best_mae_model_*.pth`、`test_results_*.pkl`、`training_curves_*.png`。
 - `visualization_results/`：fig1 与 CSV；`city_predictions/` 下为每城市/县图表（单模型为多 horizon，双模型为真实值+软+硬）。
-- `visualization_results/soft_vs_hard_comparison/`：由 `compare_models.py` 生成的对比表与对比图。
+- `visualization_results/soft_vs_hard_comparison/`：由 `compare_models.py` 生成的软/硬/无约束三路对比表与对比图。
 
 ## Evaluation Metrics
 
