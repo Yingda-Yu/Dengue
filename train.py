@@ -10,6 +10,29 @@
 5. 学习率预热 + 余弦退火
 6. 更好的评估指标
 """
+import sys
+import os
+import platform
+
+
+def _fix_common_cli_typos() -> None:
+    """将常见笔误改为合法参数（例如把数字 1 打成 --1r）。须在 import torch 之前执行。"""
+    typo_map = {
+        "--1r": "--lr",
+        "-1r": "--lr",
+        "--IR": "--lr",
+    }
+    changed = False
+    for i in range(1, len(sys.argv)):
+        if sys.argv[i] in typo_map:
+            sys.argv[i] = typo_map[sys.argv[i]]
+            changed = True
+    if changed:
+        print("提示: 已将命令行中的笔误修正为 --lr（学习率是字母 L，不是数字 1）")
+
+
+_fix_common_cli_typos()
+
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -17,12 +40,95 @@ from torch.utils.data import Dataset, DataLoader
 from torch.optim.lr_scheduler import CosineAnnealingWarmRestarts, OneCycleLR
 import numpy as np
 import pickle
-import os
 from tqdm import tqdm
 import matplotlib.pyplot as plt
-from model import EpidemiologyGNNv2, create_fully_connected_graph
+from model import EpidemiologyGNNv2
 import time
 import argparse
+import gc
+from typing import Any, Dict, Optional
+
+
+def _dataloader_num_workers(config: Optional[Dict[str, Any]] = None) -> int:
+    """
+    Windows 默认 0；可用 DENGUE_DATALOADER_WORKERS 覆盖。
+    CUDA 且显存 <10GiB 时强制 0（多进程常加剧 OOM，忽略环境变量中的 >0）。
+    """
+    nw = 0
+    if os.environ.get("DENGUE_DATALOADER_WORKERS") is not None:
+        nw = max(0, int(os.environ["DENGUE_DATALOADER_WORKERS"]))
+    elif platform.system() != "Windows":
+        nw = 4
+    if config and config.get("device") == "cuda" and torch.cuda.is_available():
+        try:
+            gb = torch.cuda.get_device_properties(0).total_memory / (1024**3)
+            if gb < 10.0 and nw > 0:
+                print(
+                    f"[显存约 {gb:.1f} GiB] 强制 DataLoader num_workers=0（忽略 DENGUE_DATALOADER_WORKERS={nw}，避免子进程占显存）"
+                )
+                nw = 0
+        except Exception:
+            pass
+    return nw
+
+
+def _maybe_reduce_model_for_vram(config: dict) -> None:
+    """8GB 级显卡自动缩小隐藏维；或设 DENGUE_SMALL_MODEL=1 强制。"""
+    force = os.environ.get("DENGUE_SMALL_MODEL", "").lower() in ("1", "true", "yes")
+    if config.get("device") != "cuda" or not torch.cuda.is_available():
+        if force:
+            print("DENGUE_SMALL_MODEL=1 仅对 CUDA 生效，已忽略")
+        return
+    try:
+        gb = torch.cuda.get_device_properties(0).total_memory / (1024**3)
+    except Exception:
+        return
+    if not force and gb > 9.0:
+        return
+    if config["spatial_hidden_dim"] <= 64 and config["temporal_hidden_dim"] <= 128:
+        return
+    print(
+        f"[显存约 {gb:.1f} GiB] 启用紧凑模型: spatial_hidden 64, temporal_hidden 128, 层数≤2"
+        + (" (DENGUE_SMALL_MODEL=1)" if force else "（自动）")
+    )
+    config["spatial_hidden_dim"] = 64
+    config["temporal_hidden_dim"] = 128
+    config["num_spatial_layers"] = min(2, config["num_spatial_layers"])
+    config["num_temporal_layers"] = min(2, config["num_temporal_layers"])
+
+
+def _auto_cap_batch_size_for_vram(config: dict) -> None:
+    """
+    本模型时间编码把 (batch × 城市数) 展平进 LSTM，显存随 batch 急剧上升。
+    8GB 级显卡默认 batch_size=512 训练几乎必 OOM，按显存自动上限。
+    设置环境变量 DENGUE_DISABLE_BATCH_CAP=1 可关闭自动降 batch。
+    """
+    if os.environ.get("DENGUE_DISABLE_BATCH_CAP", "").lower() in ("1", "true", "yes"):
+        return
+    if config.get("device") != "cuda" or not torch.cuda.is_available():
+        return
+    try:
+        total = torch.cuda.get_device_properties(0).total_memory
+        gb = total / (1024**3)
+        bs = int(config["batch_size"])
+        if gb < 8:
+            cap = 32
+        elif gb < 9:
+            cap = 64
+        elif gb < 12:
+            cap = 128
+        elif gb < 20:
+            cap = 256
+        else:
+            cap = 512
+        if bs > cap:
+            print(
+                f"[显存约 {gb:.1f} GiB] batch_size: {bs} → {cap}（减轻 CUDA OOM；"
+                f"可用 --batch-size 指定更小值，或设 DENGUE_DISABLE_BATCH_CAP=1 关闭本限制）"
+            )
+            config["batch_size"] = cap
+    except Exception as exc:
+        print(f"未根据显存调整 batch_size: {exc}")
 
 
 class DengueDataset(Dataset):
@@ -318,6 +424,43 @@ def main():
     parser = argparse.ArgumentParser(description='训练软约束、硬约束或无约束模型')
     parser.add_argument('--constraint', type=str, choices=['soft', 'hard', 'none'], default='soft',
                         help='soft=软约束(SIS仅作损失项), hard=硬约束(输出=SIS+NN残差), none=无SIS基线')
+    parser.add_argument(
+        '--num_epochs', '--num-epochs',
+        type=int,
+        default=None,
+        dest='num_epochs',
+        help='覆盖训练轮数（默认 300）；可写 --num-epochs',
+    )
+    parser.add_argument('--patience', type=int, default=None, help='早停耐心（默认 50）')
+    parser.add_argument(
+        '--exp-name',
+        type=str,
+        default='',
+        help='实验子目录：权重保存到 checkpoints/<exp-name>/（避免调参覆盖默认 best_model_*.pth）',
+    )
+    parser.add_argument(
+        '--lr', '--learning-rate',
+        type=float,
+        default=None,
+        dest='lr',
+        metavar='LR',
+        help='学习率，默认 5e-4（注意是字母 L，不是数字 1；亦可写 --learning-rate）',
+    )
+    parser.add_argument('--weight-decay', type=float, default=None, help='AdamW weight_decay')
+    parser.add_argument('--dropout', type=float, default=None, help='模型 dropout')
+    parser.add_argument('--lambda-mae', type=float, default=None, help='损失中 MAE 权重')
+    parser.add_argument('--lambda-outbreak', type=float, default=None, help='爆发期损失权重')
+    parser.add_argument('--lambda-sis', type=float, default=None, help='软约束时 SIS 损失权重（仅 soft）')
+    parser.add_argument('--batch-size', type=int, default=None, help='DataLoader batch_size')
+    parser.add_argument('--spatial-hidden', type=int, default=None, help='空间隐藏维')
+    parser.add_argument('--temporal-hidden', type=int, default=None, help='时间隐藏维')
+    parser.add_argument('--num-spatial-layers', type=int, default=None, help='空间注意力层数')
+    parser.add_argument('--num-temporal-layers', type=int, default=None, help='LSTM 层数')
+    parser.add_argument(
+        '--no-amp',
+        action='store_true',
+        help='关闭 CUDA 混合精度（极低显存时可略减显存碎片风险）',
+    )
     args = parser.parse_args()
     constraint_mode = args.constraint
     use_hard_constraint = (constraint_mode == 'hard')
@@ -350,13 +493,46 @@ def main():
         
         'device': 'cuda' if torch.cuda.is_available() else 'cpu',
         'save_dir': 'checkpoints',
-        'use_amp': True,
         'constraint_mode': constraint_mode,
         'use_hard_constraint': use_hard_constraint,
+        'exp_name': (args.exp_name or '').strip(),
+        'use_amp': (not args.no_amp)
+        and (os.environ.get('DENGUE_NO_AMP', '').lower() not in ('1', 'true', 'yes')),
     }
+    if args.exp_name and args.exp_name.strip():
+        config['save_dir'] = os.path.join('checkpoints', args.exp_name.strip().replace(' ', '_'))
+    if args.num_epochs is not None:
+        config['num_epochs'] = args.num_epochs
+    if args.patience is not None:
+        config['patience'] = args.patience
+    if args.lr is not None:
+        config['learning_rate'] = args.lr
+    if args.weight_decay is not None:
+        config['weight_decay'] = args.weight_decay
+    if args.dropout is not None:
+        config['dropout'] = args.dropout
+    if args.lambda_mae is not None:
+        config['lambda_mae'] = args.lambda_mae
+    if args.lambda_outbreak is not None:
+        config['lambda_outbreak'] = args.lambda_outbreak
+    if args.lambda_sis is not None:
+        config['lambda_sis'] = args.lambda_sis
+    if args.batch_size is not None:
+        config['batch_size'] = args.batch_size
+    if args.spatial_hidden is not None:
+        config['spatial_hidden_dim'] = args.spatial_hidden
+    if args.temporal_hidden is not None:
+        config['temporal_hidden_dim'] = args.temporal_hidden
+    if args.num_spatial_layers is not None:
+        config['num_spatial_layers'] = args.num_spatial_layers
+    if args.num_temporal_layers is not None:
+        config['num_temporal_layers'] = args.num_temporal_layers
     
     # 硬约束/无约束时损失中不加 L_SIS
     lambda_sis = config['lambda_sis'] if (constraint_mode == 'soft') else config['lambda_sis_hard']
+    
+    _auto_cap_batch_size_for_vram(config)
+    _maybe_reduce_model_for_vram(config)
     
     os.makedirs(config['save_dir'], exist_ok=True)
     
@@ -397,23 +573,30 @@ def main():
     val_dataset = DengueDataset(val_X, val_y, scaler=scaler)
     test_dataset = DengueDataset(test_X, test_y, scaler=scaler)
     
+    _nw = _dataloader_num_workers(config)
+    _pw = _nw > 0
     train_loader = DataLoader(
         train_dataset, batch_size=config['batch_size'], shuffle=True,
-        num_workers=4, pin_memory=True, persistent_workers=True
+        num_workers=_nw, pin_memory=True, persistent_workers=_pw
     )
     val_loader = DataLoader(
         val_dataset, batch_size=config['batch_size'], shuffle=False,
-        num_workers=4, pin_memory=True, persistent_workers=True
+        num_workers=_nw, pin_memory=True, persistent_workers=_pw
     )
     test_loader = DataLoader(
         test_dataset, batch_size=config['batch_size'], shuffle=False,
-        num_workers=4, pin_memory=True, persistent_workers=True
+        num_workers=_nw, pin_memory=True, persistent_workers=_pw
     )
+    if _nw == 0:
+        print("DataLoader num_workers=0（Windows 默认，避免多进程与 CUDA 冲突）。加速可设环境变量: DENGUE_DATALOADER_WORKERS=4")
     
-    # 创建图
-    print("\n正在创建图结构...")
-    edge_index = create_fully_connected_graph(num_cities).to(config['device'])
-    print(f"图边数: {edge_index.shape[1]}")
+    # 当前 spatial_encoder 不使用 edge_index；勿在 GPU 上创建大图索引以免无谓占显存
+    edge_index = None
+    print("\n图结构: edge_index=None（全连接注意力不依赖 PyG 边张量，省显存）")
+    
+    if config['device'] == 'cuda' and torch.cuda.is_available():
+        gc.collect()
+        torch.cuda.empty_cache()
     
     # 创建模型
     print("\n正在初始化模型...")

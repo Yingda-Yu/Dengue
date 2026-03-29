@@ -30,9 +30,17 @@
 ├── inference.py                 # 单步/多步预测
 ├── visualize_results.py         # 可视化（--model soft/hard/both）
 ├── compare_models.py            # 软 vs 硬 vs 无约束 三路对比表格与图
+├── paper_experiments.py         # 论文 Table1：ARIMA/LSTM/Base/Proposed(软/硬) 与 RMSE 等指标
+├── tune_hard_gnn.py             # 硬约束超参批量试验，结果写入 paper_results/tuning_hard_runs.csv
+├── visualize_paper_table.py     # 由 paper_results/*.csv 生成对比图
 ├── run_pipeline.py              # 一键流程
 └── README.md
 ```
+
+## Windows 说明
+
+- PyTorch 若报 **`.dll` 加载失败** 或 **MemoryError**，见根目录 **`WINDOWS_PYTORCH.md`**。  
+- 训练脚本支持 **`--lr`** / **`--learning-rate`**、**`--num_epochs`** / **`--num-epochs`**；误写 **`--1r`** 会自动纠正为 **`--lr`**。
 
 ## Quick Start
 
